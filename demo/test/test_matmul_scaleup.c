@@ -67,8 +67,8 @@ int main() {
   float *dst_ptr = (float *)matmul_dest.data;
   float *ans_ptr = (float *)matmul_answ.data;
   EXCEPT_FP32_ARRAY_LAX_EQ(ans_ptr, dst_ptr, M * N,
-                           "MATMUL [32, 32] @ [32, 32]");
-  
+                           "MATMUL [4096, 4096] @ [4096, 1024]");
+
   free(src1);
   free(src2);
   free(dest);
