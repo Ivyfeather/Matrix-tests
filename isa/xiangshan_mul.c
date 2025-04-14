@@ -1,19 +1,36 @@
 #include "utils.h"
 #include <riscv_matrix.h>
 
+#define M 256 // Rows of matrix A
+#define K 512 // Columns of matrix A and rows of matrix B
+#define N 512 // Columns of matrix B
+
+// these are actually set in NEMU-Matrix/src/isa/riscv64/instr/rvmatrix/mreg.h
+// unused
+#define tmmax 64
+#define tkmax 256
+#define tnmax 64
+
+#define L2_Banks 8
+
 static void test_xiangshan_mm() {
-    const int M = 128; // Rows of matrix A
-    const int K = 512; // Columns of matrix A and rows of matrix B
-    const int N = 512; // Columns of matrix B
-    const int tmmax = 64;
-    const int tkmax = 256;
-    const int tnmax = 64;
     int tile_m, tile_k, tile_n;
     msettype(E8, M1, BA);
 
-    int8_t A[M][K]; // Matrix A
-    int8_t B[K][N]; // Matrix B
-    int8_t C[M][N] = {0}; // Result matrix C initialized to 0
+    // if K/N is not coprime with L2_Banks,
+    //   we need to add padding to ensure matrix loads of rows are equally distributed among L2 banks
+    //   (otherwise requests will flush into the same bank)
+    // TMP: we hard-code here
+    // TODO: no need for M, right?
+    const int M_padding = M;
+    // since mload.a row is 256B (4 lines in a row), we add 256B padding to K,
+    //   to ensure bankIdx is contiguously incremented
+    const int K_padding = K + 256;
+    const int N_padding = N + 64;
+
+    __attribute__((aligned(64))) int8_t A[M_padding][K_padding]; // Matrix A
+    __attribute__((aligned(64))) int8_t B[K_padding][N_padding]; // Matrix B
+    __attribute__((aligned(64))) int8_t C[M_padding][N_padding] = {0}; // Result matrix C
 
     // Initialize matrices A and B with some values (for testing)
     for (int i = 0; i < M; i++) {
@@ -33,17 +50,15 @@ static void test_xiangshan_mm() {
 
         for (int n = 0; n < N; n += tile_n) {
             tile_n = msettilen(N - n);
-            mint8m1_t out = mlce8_m1(&C[m][n], N * sizeof(int8_t));
+            mint8m1_t out = mlce8_m1(&C[m][n], N_padding * sizeof(int8_t));
 
             for (int k = 0; k < K; k += tile_k) {
                 tile_k = msettilek(K - k);
-                mint8m1_t tr_a = mlae8_m1(&A[m][k], K * sizeof(int8_t));
-                mint8m1_t tr_b = mlbe8_m1(&B[k][n], N * sizeof(int8_t));
-                printf("@@ m: %d, k: %d, n: %d\n", m, k, n);
-                printf("  @@ tile_m: %d, tile_k: %d, tile_n: %d\n", tile_m, tile_k, tile_n);
+                mint8m1_t tr_a = mlae8_m1(&A[m][k], K_padding * sizeof(int8_t));
+                mint8m1_t tr_b = mlbe8_m1(&B[k][n], N_padding * sizeof(int8_t));
                 out = mma_mm(out, tr_a, tr_b);
             }
-            msce8_m(out, &C[m][n], N * sizeof(int8_t));
+            msce8_m(out, &C[m][n], N_padding * sizeof(int8_t));
         }
     }
 
