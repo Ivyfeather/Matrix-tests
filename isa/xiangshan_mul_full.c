@@ -44,8 +44,8 @@ const int N_padding = N + 64;
 ---------------------------------------- */ 
 __attribute__((aligned(64))) int8_t A[M_padding][K_padding]; // Matrix A
 __attribute__((aligned(64))) int8_t B[K_padding][N_padding]; // Matrix B
-__attribute__((aligned(64))) int8_t C[M_padding][N_padding]; // Result matrix C
-//TODO: C matrix is 32
+__attribute__((aligned(64))) int32_t C[M_padding][N_padding]; // Result matrix C
+
 static void test_xiangshan_mm() {
     int tile_m, tile_k, tile_n;
     msettype(E8, M1, BA);
@@ -84,15 +84,19 @@ static void test_xiangshan_mm() {
                     tile_m = msettilem(M_PERCORE - m);
                     for (int n = 0; n < N_PERCORE; n += tile_n) {
                         tile_n = msettilen(N_PERCORE - n);
-                        mint8m1_t out = mlce8_m1(&C[m_base + m][n_base + n], N_padding * sizeof(int8_t));
+                        msettype(E32, M4, BA);
+                        mint32m4_t tr_c = mlce32_m4(&C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
+                        msettype(E8, M1, BA);
                         
                         for (int k = 0; k < K_PERCORE; k += tile_k) {
                             tile_k = msettilek(K_PERCORE - k);
                             mint8m1_t tr_a = mlae8_m1(&A[m_base + m][k_base + k], K_padding * sizeof(int8_t));
                             mint8m1_t tr_b = mlbe8_m1(&B[k_base + k][n_base + n], N_padding * sizeof(int8_t));
-                            out = mma_mm(out, tr_a, tr_b);
+                            tr_c = mqma_mm(tr_c, tr_a, tr_b);
                         }
-                        msce8_m(out, &C[m_base + m][n_base + n], N_padding * sizeof(int8_t));
+                        msettype(E32, M4, BA);
+                        msce32_m(tr_c, &C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
+                        msettype(E8, M1, BA);
                     }
                 }
                 // inner m × k × n done, proceed to next k_outer
