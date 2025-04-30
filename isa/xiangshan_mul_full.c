@@ -14,8 +14,8 @@
 
 /* ----------------------------------------
   if K_PERCORE is too large so that A/B PERCORE cannot be loaded into L2 at the same time,
-    we need to 
-
+    we need to load part by part of A (M_PERCORE × K_ONCE) and B (K_ONCE × N_PERCORE) into L2,
+    to achieve better data reuse in L2
 ---------------------------------------- */
 #define K_ONCE 512
 
@@ -75,29 +75,39 @@ static int test_xiangshan_mm() {
             int n_base = n_outer * N_PERCORE;
 
             for (int k_outer = 0; k_outer < K/K_PERCORE; k_outer ++) {
-                int k_base = k_outer * K_PERCORE;
+                int k_outer_base = k_outer * K_PERCORE;
 
                 // inner loop for per core
                 // we focus on how to calculate the result matrix C per core
                 // size of C for each core is M_PERCORE × N_PERCORE
-                for (int m = 0; m < M_PERCORE; m += tile_m) {
-                    tile_m = msettilem(M_PERCORE - m);
-                    for (int n = 0; n < N_PERCORE; n += tile_n) {
-                        tile_n = msettilen(N_PERCORE - n);
-                        msettype(E32, M4, BA);
-                        mint32m4_t tr_c = mlce32_m4(&C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
-                        msettype(E8, M1, BA);
-                        
-                        for (int k = 0; k < K_PERCORE; k += tile_k) {
-                            tile_k = msettilek(K_PERCORE - k);
-                            mint8m1_t tr_a = mlae8_m1(&A[m_base + m][k_base + k], K_padding * sizeof(int8_t));
-                            mint8m1_t tr_b = mlbe8_m1(&B[k_base + k][n_base + n], N_padding * sizeof(int8_t));
-                            tr_c = mqma_mm(tr_c, tr_a, tr_b);
+
+                for (int k_inner = 0; k_inner < K_PERCORE/K_ONCE; k_inner ++) {
+                    int k_inner_base = k_outer_base + k_inner * K_ONCE;
+
+                    for (int m = 0; m < M_PERCORE; m += tile_m) {
+                        tile_m = msettilem(M_PERCORE - m);
+                        for (int n = 0; n < N_PERCORE; n += tile_n) {
+                            tile_n = msettilen(N_PERCORE - n);
+                            msettype(E32, M4, BA);
+                            mint32m4_t tr_c = mlce32_m4(&C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
+                            msettype(E8, M1, BA);
+
+                            for (int k = 0; k < K_ONCE; k += tile_k) {
+                                tile_k = msettilek(K_ONCE - k);
+                                mint8m1_t tr_a = mlae8_m1(&A[m_base + m][k_inner_base + k], K_padding * sizeof(int8_t));
+                                mint8m1_t tr_b = mlbe8_m1(&B[k_inner_base + k][n_base + n], N_padding * sizeof(int8_t));
+                                tr_c = mqma_mm(tr_c, tr_a, tr_b);
+                            }
+                            msettype(E32, M4, BA);
+                            msce32_m(tr_c, &C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
+                            msettype(E8, M1, BA);
                         }
-                        msettype(E32, M4, BA);
-                        msce32_m(tr_c, &C[m_base + m][n_base + n], N_padding * sizeof(int32_t));
-                        msettype(E8, M1, BA);
                     }
+                    // inner m × k × n done, proceed to next k_outer
+                    printf("-- core %d, mi %d, ni %d, ki %d, kseg %d\n",
+                        m_outer * N/N_PERCORE * K/K_PERCORE + n_outer * K/K_PERCORE + k_outer,
+                        m_outer, n_outer, k_outer, k_inner);
+
                 }
                 // inner m × k × n done, proceed to next k_outer
                 printf("@@ core %d, mi %d, ni %d, ki %d\n",
@@ -105,7 +115,7 @@ static int test_xiangshan_mm() {
                     m_outer, n_outer, k_outer);
             }
             // proceed to next n_outer
-            printf("@@ done C %d %d\n", m_outer, n_outer);
+            printf("== done C %d %d\n", m_outer, n_outer);
             
         }// TODO: add L2 cache load per segment
     }
@@ -144,6 +154,6 @@ int main() {
     printf("Hello, RISC-V World!\n");
     int result = test_xiangshan_mm();
     printf("Matrix Multiplication Test Done\n");
-    nemu_signal( result);
+    nemu_signal(result);
     return 0;
 }
