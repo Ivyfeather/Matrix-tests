@@ -62,13 +62,20 @@ static void test_xiangshan_mm() {
         }
     }
 
-    // Print result matrix C (optional, for verification)
-    // for (int i = 0; i < M; i++) {
-    //     for (int j = 0; j < N; j++) {
-    //         printf("%d ", C[i][j]);
-    //     }
-    //     printf("\n");
-    // }
+    // Check result matrix C
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            int8_t result = 0;
+            for (int k = 0; k < K; k++) {
+                result += A[i][k] * B[k][j];
+            }
+
+            if (C[i][j] != result) {
+                printf("Mismatch at C[%d][%d]: expected %d, got %d\n", i, j, result, C[i][j]);
+                exit(1);
+            }
+        }
+    }
 }
 
 #define DISABLE_TIME_INTR 0x100

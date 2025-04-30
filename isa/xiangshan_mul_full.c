@@ -46,7 +46,7 @@ __attribute__((aligned(64))) int8_t A[M_padding][K_padding]; // Matrix A
 __attribute__((aligned(64))) int8_t B[K_padding][N_padding]; // Matrix B
 __attribute__((aligned(64))) int32_t C[M_padding][N_padding]; // Result matrix C
 
-static void test_xiangshan_mm() {
+static int test_xiangshan_mm() {
     int tile_m, tile_k, tile_n;
     msettype(E8, M1, BA);
 
@@ -110,13 +110,21 @@ static void test_xiangshan_mm() {
         }// TODO: add L2 cache load per segment
     }
 
-    // Print result matrix C (optional, for verification)
-    // for (int i = 0; i < M; i++) {
-    //     for (int j = 0; j < N; j++) {
-    //         printf("%d ", C[i][j]);
-    //     }
-    //     printf("\n");
-    // }
+    // Check result matrix C
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            int32_t result = 0;
+            for (int k = 0; k < K; k++) {
+                result += (int32_t)A[i][k] * (int32_t)B[k][j];
+            }
+
+            if (C[i][j] != result) {
+                printf("Mismatch at C[%d][%d]: expected %d, got %d\n", i, j, result, C[i][j]);
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 #define DISABLE_TIME_INTR 0x100
@@ -134,8 +142,8 @@ void nemu_signal(int a){
 
 int main() {
     printf("Hello, RISC-V World!\n");
-    test_xiangshan_mm();
+    int result = test_xiangshan_mm();
     printf("Matrix Multiplication Test Done\n");
-    nemu_signal(GOOD_TRAP);
+    nemu_signal( result);
     return 0;
 }
