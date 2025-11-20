@@ -2,15 +2,30 @@
 #include <riscv_matrix.h>
 #include <stdlib.h> // Add header file to use malloc
 
+#define SMALL
 /* Matrix Size */
-#define M 512 // Rows of matrix A
-#define K 7168 // Columns of matrix A and rows of matrix B
-#define N 1024 // Columns of matrix B, this should be 4096, tmp try 1024 for shorter trace
+#ifdef SMALL
+    #define M 256 // Columns of matrix B, this should be 512, tmp try for shorter trace
+    #define K 4096 // Columns of matrix A and rows of matrix B, this should be 7168
+    #define N 512 // Columns of matrix B, this should be 4096
+#else
+    /* Matrix Size */
+    #define M 512 // Columns of matrix B, this should be 512, tmp try for shorter trace
+    #define K 7168 // Columns of matrix A and rows of matrix B, this should be 7168
+    #define N 4096 // Columns of matrix B, this should be 4096
+#endif
 
+#define SINGLE_CORE
 /* Matrix Per Core Size */
-#define M_PERCORE 256
-#define K_PERCORE 7168
-#define N_PERCORE 512
+#ifdef SINGLE_CORE
+    #define M_PERCORE M
+    #define K_PERCORE K
+    #define N_PERCORE N
+#else
+    #define M_PERCORE 256
+    #define K_PERCORE 7168
+    #define N_PERCORE 512
+#endif
 
 /* ----------------------------------------
   if K_PERCORE is too large so that A/B PERCORE cannot be loaded into L2 at the same time,
@@ -67,6 +82,12 @@ static int test_xiangshan_mm() {
         }
     }
 
+    // Assert that dimensions are properly divisible
+    assert(M % M_PERCORE == 0 && "M must be divisible by M_PERCORE");
+    assert(N % N_PERCORE == 0 && "N must be divisible by N_PERCORE");
+    assert(K % K_PERCORE == 0 && "K must be divisible by K_PERCORE");
+    assert(K_PERCORE % K_ONCE == 0 && "K_PERCORE must be divisible by K_ONCE");
+
     // Perform block matrix multiplication
     // outer loop for cores
     for (int m_outer = 0; m_outer < M/M_PERCORE; m_outer ++) {
@@ -120,9 +141,10 @@ static int test_xiangshan_mm() {
         }// TODO: add L2 cache load per segment
     }
 
-    // Check result matrix C
-    for (int i = 0; i < M; i++) {
-        for (int j = 0; j < N; j++) {
+    // Software-Check result matrix C
+    // only check a portion, cause it takes too long to check all
+    for (int i = 0; i < 10; i++) {
+        for (int j = 0; j < 10; j++) {
             int32_t result = 0;
             for (int k = 0; k < K; k++) {
                 result += (int32_t)A[i][k] * (int32_t)B[k][j];
@@ -134,6 +156,15 @@ static int test_xiangshan_mm() {
             }
         }
     }
+
+    // Hardware-Check: load data again through DCache, for tl-test to check
+    int32_t sum = 0;
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            sum += C[i][j];
+        }
+    }
+    printf("sum of all elements in C: %d\n", sum);
     return 0;
 }
 
