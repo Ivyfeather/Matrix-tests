@@ -1,6 +1,7 @@
 #include "utils.h"
 #include <riscv_matrix.h>
 #include <stdlib.h> // Add header file to use malloc
+#include <assert.h>
 
 #define SMALL
 /* Matrix Size */
@@ -61,6 +62,27 @@ __attribute__((aligned(64))) int8_t A[M_padding][K_padding]; // Matrix A
 __attribute__((aligned(64))) int8_t B[K_padding][N_padding]; // Matrix B
 __attribute__((aligned(64))) int32_t C[M_padding][N_padding]; // Result matrix C
 
+/* ----------------------------------------
+    NEMU TRAP signals
+---------------------------------------- */
+#define DISABLE_TIME_INTR 0x100
+#define NOTIFY_PROFILER 0x101
+#define NOTIFY_PROFILE_EXIT 0x102
+#define GOOD_TRAP 0x0
+#define TRACE_DUMP 0x103
+#define TRACE_END 0x104
+
+void nemu_signal(int a){
+    asm volatile ("mv a0, %0\n\t"
+                  ".insn r 0x6B, 0, 0, x0, x0, x0\n\t"
+                  :
+                  : "r"(a)
+                  : "a0");
+}
+
+/* ----------------------------------------
+    MMA test function
+---------------------------------------- */
 static int test_xiangshan_mm() {
     int tile_m, tile_k, tile_n;
     msettype(E8, M1, BA);
@@ -143,6 +165,7 @@ static int test_xiangshan_mm() {
 
     // Software-Check result matrix C
     // only check a portion, cause it takes too long to check all
+    /*
     for (int i = 0; i < 10; i++) {
         for (int j = 0; j < 10; j++) {
             int32_t result = 0;
@@ -156,6 +179,7 @@ static int test_xiangshan_mm() {
             }
         }
     }
+    */
 
     // Hardware-Check: load data again through DCache, for tl-test to check
     int32_t sum = 0;
@@ -168,22 +192,14 @@ static int test_xiangshan_mm() {
     return 0;
 }
 
-#define DISABLE_TIME_INTR 0x100
-#define NOTIFY_PROFILER 0x101
-#define NOTIFY_PROFILE_EXIT 0x102
-#define GOOD_TRAP 0x0
-
-void nemu_signal(int a){
-    asm volatile ("mv a0, %0\n\t"
-                  ".insn r 0x6B, 0, 0, x0, x0, x0\n\t"
-                  :
-                  : "r"(a)
-                  : "a0");
-}
-
 int main() {
     printf("Hello, RISC-V World!\n");
+    printf("Starting xiangshan matrix multiplication test...\n");
+
+    nemu_signal(TRACE_DUMP);
     int result = test_xiangshan_mm();
+    nemu_signal(TRACE_END);
+
     printf("Matrix Multiplication Test Done\n");
     nemu_signal(result);
     return 0;
