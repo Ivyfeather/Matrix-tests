@@ -6,9 +6,9 @@
 #define SMALL
 /* Matrix Size */
 #ifdef SMALL
-    #define M 256 // Columns of matrix B, this should be 512, tmp try for shorter trace
-    #define K 4096 // Columns of matrix A and rows of matrix B, this should be 7168
-    #define N 512 // Columns of matrix B, this should be 4096
+    #define M 64 // Columns of matrix B, this should be 512, tmp try for shorter trace
+    #define K 256 // Columns of matrix A and rows of matrix B, this should be 7168
+    #define N 64 // Columns of matrix B, this should be 4096
 #else
     /* Matrix Size */
     #define M 512 // Columns of matrix B, this should be 512, tmp try for shorter trace
@@ -33,7 +33,7 @@
     we need to load part by part of A (M_PERCORE × K_ONCE) and B (K_ONCE × N_PERCORE) into L2,
     to achieve better data reuse in L2
 ---------------------------------------- */
-#define K_ONCE 512
+#define K_ONCE 256
 
 #define L2_Banks 8
 
