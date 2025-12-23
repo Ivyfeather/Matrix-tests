@@ -189,6 +189,23 @@ static int test_xiangshan_mm() {
         }
     }
     printf("sum of all elements in C: %d\n", sum);
+
+    // use mlce32_m4 to set matrix C to random values, to test DCache read
+    for (int m = 0; m < M; m += tile_m) {
+        for (int n = 0; n < N; n += tile_n) {
+            msettype(E32, M4, BA);
+            mint32m4_t tr_c; // TODO: may cause pointer issue, but hardware just needs address
+            msce32_m(tr_c, &C[m][n], N_padding * sizeof(int32_t));
+        }
+    }
+
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            sum += C[i][j];
+        }
+    }
+    printf("[PASS2] sum of all elements in C: %d\n", sum);
+
     return 0;
 }
 
