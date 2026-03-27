@@ -1,0 +1,8 @@
+#ifndef GENERATED_MATRIX_CONFIG_H
+#define GENERATED_MATRIX_CONFIG_H
+
+#define MATRIX_M 64
+#define MATRIX_K 256
+#define MATRIX_N 64
+
+#endif

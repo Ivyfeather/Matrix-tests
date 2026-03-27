@@ -2,19 +2,12 @@
 #include <riscv_matrix.h>
 #include <stdlib.h> // Add header file to use malloc
 #include <assert.h>
+#include "generated_matrix_config.h"
 
-#define SMALL
 /* Matrix Size */
-#ifdef SMALL
-    #define M 64 // Columns of matrix B, this should be 512, tmp try for shorter trace
-    #define K 256 // Columns of matrix A and rows of matrix B, this should be 7168
-    #define N 64 // Columns of matrix B, this should be 4096
-#else
-    /* Matrix Size */
-    #define M 512 // Columns of matrix B, this should be 512, tmp try for shorter trace
-    #define K 7168 // Columns of matrix A and rows of matrix B, this should be 7168
-    #define N 4096 // Columns of matrix B, this should be 4096
-#endif
+#define M MATRIX_M
+#define K MATRIX_K
+#define N MATRIX_N
 
 #define SINGLE_CORE
 /* Matrix Per Core Size */
@@ -35,14 +28,14 @@
 ---------------------------------------- */
 #define K_ONCE 256
 
-#define L2_Banks 8
+// #define L2_Banks 8
 
 /* ----------------------------------------
   if K/N is not coprime with L2_Banks,
     we need to add padding to ensure matrix loads of rows are equally distributed among L2 banks
     (otherwise requests will flush into the same bank)
 ---------------------------------------- */
-// TMP: we hard-code here
+// TODO: TMP: we hard-code here
 const int M_padding = M;
 // since matrix A's row is 256B (4 lines in a row), we add 256B padding to K,
 //   to ensure bankIdx is contiguously incremented
