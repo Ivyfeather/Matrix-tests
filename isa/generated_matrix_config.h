@@ -3,6 +3,6 @@
 
 #define MATRIX_M 64
 #define MATRIX_K 256
-#define MATRIX_N 64
+#define MATRIX_N 128
 
 #endif
