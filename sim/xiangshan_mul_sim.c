@@ -241,7 +241,7 @@ static void emit_blocked_trace(const matrix_layout_t *layout, const block_scheme
 int main(int argc, char **argv) {
     matrix_layout_t layout = build_layout();
     block_scheme_t scheme = {0};
-    int cache_kb = 1024;
+    int cache_kb = 256;
 
     if (argc > 1) {
         cache_kb = atoi(argv[1]);
