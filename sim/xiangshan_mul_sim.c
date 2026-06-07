@@ -10,9 +10,18 @@
 #define N MATRIX_N
 
 #define CACHE_LINE_BYTES 64ULL
+#define L2_SETS 512
+#define L2_WAYS 8
 #define BLOCK_M 64
 #define BLOCK_K 256
-#define BLOCK_N 64
+#define BLOCK_N 32
+#ifndef MATRIX_C_STRIP_M
+#define MATRIX_C_STRIP_M 16
+#endif
+#define C_STRIP_M MATRIX_C_STRIP_M
+#ifndef MATRIX_REREAD_B_PER_STRIP
+#define MATRIX_REREAD_B_PER_STRIP 0
+#endif
 
 typedef struct {
     uint64_t a_base;
@@ -43,8 +52,13 @@ static matrix_layout_t build_layout(void) {
     uint64_t b_size = (uint64_t)K * (uint64_t)N * sizeof(int8_t);
 
     layout.a_base = 0ULL;
-    layout.b_base = align_up_u64(layout.a_base + a_size, CACHE_LINE_BYTES);
-    layout.c_base = align_up_u64(layout.b_base + b_size, CACHE_LINE_BYTES);
+    /*
+     * Avoid putting A/B/C at exact L2-size intervals. 512 sets * 64B is 32 KiB
+     * per way, so power-of-two aligned matrix bases make all arrays fight for
+     * the same set colors even when the aggregate tile bytes fit in L2.
+     */
+    layout.b_base = align_up_u64(layout.a_base + a_size, CACHE_LINE_BYTES) + CACHE_LINE_BYTES;
+    layout.c_base = align_up_u64(layout.b_base + b_size, CACHE_LINE_BYTES) + 2ULL * CACHE_LINE_BYTES;
     return layout;
 }
 
@@ -84,17 +98,77 @@ static void fill_scheme_stats(block_scheme_t *scheme) {
     scheme->total_reuse = scheme->total_reuse_per_block * scheme->big_block_count;
 }
 
+static void count_block_sets(uint16_t occ[L2_SETS], uint64_t base_addr, int rows,
+                             uint64_t row_stride_bytes, uint64_t row_bytes) {
+    for (int row = 0; row < rows; row++) {
+        uint64_t row_base = base_addr + (uint64_t)row * row_stride_bytes;
+        for (uint64_t offset = 0; offset < row_bytes; offset += CACHE_LINE_BYTES) {
+            uint64_t addr = row_base + offset;
+            uint64_t set = (addr / CACHE_LINE_BYTES) % L2_SETS;
+            occ[set]++;
+        }
+    }
+}
+
+static uint16_t max_read_set_occupancy(const matrix_layout_t *layout,
+                                       const block_scheme_t *scheme) {
+    uint16_t max_occ = 0;
+
+    for (int mb = 0; mb < M; mb += scheme->bm) {
+        for (int kb = 0; kb < K; kb += scheme->bk) {
+            for (int nb = 0; nb < N; nb += scheme->bn) {
+                uint16_t occ[L2_SETS] = {0};
+                uint64_t a_base = layout->a_base + (uint64_t)mb * (uint64_t)K + (uint64_t)kb;
+                uint64_t b_base = layout->b_base + (uint64_t)kb * (uint64_t)N + (uint64_t)nb;
+
+                count_block_sets(occ, a_base, scheme->bm, (uint64_t)K * sizeof(int8_t),
+                                 (uint64_t)scheme->bk * sizeof(int8_t));
+                count_block_sets(occ, b_base, scheme->bk, (uint64_t)N * sizeof(int8_t),
+                                 (uint64_t)scheme->bn * sizeof(int8_t));
+
+                for (int set = 0; set < L2_SETS; set++) {
+                    if (occ[set] > max_occ) {
+                        max_occ = occ[set];
+                    }
+                }
+            }
+        }
+    }
+
+    return max_occ;
+}
+
+static uint16_t max_c_set_occupancy(const matrix_layout_t *layout,
+                                    const block_scheme_t *scheme) {
+    uint16_t max_occ = 0;
+
+    for (int mb = 0; mb < M; mb += scheme->bm) {
+        for (int nb = 0; nb < N; nb += scheme->bn) {
+            uint16_t occ[L2_SETS] = {0};
+            uint64_t c_base = layout->c_base + ((uint64_t)mb * (uint64_t)N + (uint64_t)nb) * sizeof(int32_t);
+
+            count_block_sets(occ, c_base, scheme->bm, (uint64_t)N * sizeof(int32_t),
+                             (uint64_t)scheme->bn * sizeof(int32_t));
+
+            for (int set = 0; set < L2_SETS; set++) {
+                if (occ[set] > max_occ) {
+                    max_occ = occ[set];
+                }
+            }
+        }
+    }
+
+    return max_occ;
+}
+
 static int scheme_dominates(const block_scheme_t *lhs, const block_scheme_t *rhs) {
     int no_smaller = lhs->bm >= rhs->bm && lhs->bk >= rhs->bk && lhs->bn >= rhs->bn;
     int strictly_larger = lhs->bm > rhs->bm || lhs->bk > rhs->bk || lhs->bn > rhs->bn;
     return no_smaller && strictly_larger;
 }
 
-static int choose_best_scheme(int cache_kb, block_scheme_t *best) {
+static int choose_best_scheme(int cache_kb, const matrix_layout_t *layout, block_scheme_t *best) {
     uint64_t cache_bytes = (uint64_t)cache_kb * 1024ULL;
-    uint64_t total_bytes = (uint64_t)M * (uint64_t)K * sizeof(int8_t) +
-                           (uint64_t)K * (uint64_t)N * sizeof(int8_t) +
-                           (uint64_t)M * (uint64_t)N * sizeof(int32_t);
     uint64_t best_score = 0;
     uint64_t best_ws = 0;
     int found = 0;
@@ -115,17 +189,6 @@ static int choose_best_scheme(int cache_kb, block_scheme_t *best) {
         fprintf(stderr, "M/K/N must be multiples of %d/%d/%d, got %d/%d/%d\n",
                 BLOCK_M, BLOCK_K, BLOCK_N, M, K, N);
         return -1;
-    }
-
-    if (total_bytes <= cache_bytes) {
-        best->bm = M;
-        best->bk = K;
-        best->bn = N;
-        best->working_set_bytes = total_bytes;
-        fill_scheme_stats(best);
-        printf("whole matrix fits in cache, skip enumeration | ws=%lluB <= cache=%lluB\n",
-               (unsigned long long)total_bytes, (unsigned long long)cache_bytes);
-        return 0;
     }
 
     for (int bm = BLOCK_M; bm <= M; bm += BLOCK_M) {
@@ -156,6 +219,17 @@ static int choose_best_scheme(int cache_kb, block_scheme_t *best) {
                     .working_set_bytes = working_set_bytes,
                 };
                 fill_scheme_stats(&candidate);
+                uint16_t read_max_occ = max_read_set_occupancy(layout, &candidate);
+                uint16_t c_max_occ = max_c_set_occupancy(layout, &candidate);
+                if (read_max_occ > L2_WAYS || c_max_occ > L2_WAYS) {
+                    printf("reject block %d x %d x %d | ws=%lluB | read_max_set_occ=%u | c_max_set_occ=%u | ways=%d\n",
+                           candidate.bm, candidate.bk, candidate.bn,
+                           (unsigned long long)candidate.working_set_bytes,
+                           (unsigned int)read_max_occ,
+                           (unsigned int)c_max_occ,
+                           L2_WAYS);
+                    continue;
+                }
 
                 if (candidate_count == candidate_cap) {
                     candidate_cap *= 2;
@@ -192,9 +266,13 @@ static int choose_best_scheme(int cache_kb, block_scheme_t *best) {
         }
 
         uint64_t score = candidates[i].total_reuse;
-        printf("candidate block %d x %d x %d | ws=%lluB | blocks=%llu | kernels/block=%llu | A_reuse/block=%llu | B_reuse/block=%llu | total_reuse/block=%llu | total_reuse=%llu\n",
+        uint16_t read_max_occ = max_read_set_occupancy(layout, &candidates[i]);
+        uint16_t c_max_occ = max_c_set_occupancy(layout, &candidates[i]);
+        printf("candidate block %d x %d x %d | ws=%lluB | read_max_set_occ=%u | c_max_set_occ=%u | blocks=%llu | kernels/block=%llu | A_reuse/block=%llu | B_reuse/block=%llu | total_reuse/block=%llu | total_reuse=%llu\n",
                candidates[i].bm, candidates[i].bk, candidates[i].bn,
                (unsigned long long)candidates[i].working_set_bytes,
+               (unsigned int)read_max_occ,
+               (unsigned int)c_max_occ,
                (unsigned long long)candidates[i].big_block_count,
                (unsigned long long)candidates[i].kernels_per_block,
                (unsigned long long)candidates[i].a_reuse_per_block,
@@ -218,10 +296,39 @@ static int choose_best_scheme(int cache_kb, block_scheme_t *best) {
 static void emit_blocked_trace(const matrix_layout_t *layout, const block_scheme_t *scheme) {
     for (int mb = 0; mb < M; mb += scheme->bm) {
         for (int nb = 0; nb < N; nb += scheme->bn) {
-
-            uint64_t c_base = layout->c_base + ((uint64_t)mb * (uint64_t)N + (uint64_t)nb) * sizeof(int32_t);
+#if MATRIX_REREAD_B_PER_STRIP
+            for (int cm = 0; cm < scheme->bm; cm += C_STRIP_M) {
+                int rows = C_STRIP_M;
+                if (cm + rows > scheme->bm) {
+                    rows = scheme->bm - cm;
+                }
 
                 for (int kb = 0; kb < K; kb += scheme->bk) {
+                    uint64_t a_base = layout->a_base +
+                                      ((uint64_t)mb + (uint64_t)cm) * (uint64_t)K +
+                                      (uint64_t)kb;
+                    uint64_t b_base = layout->b_base + (uint64_t)kb * (uint64_t)N + (uint64_t)nb;
+
+                    /*
+                     * Emit one C row strip at a time. The B tile is intentionally
+                     * reread for each strip so the simulated matrix unit keeps B
+                     * hot in L2 while PutFlush can drain older C writes in the
+                     * background.
+                     */
+                    trace_matrix_block('r', a_base, rows, (uint64_t)K * sizeof(int8_t),
+                                       (uint64_t)scheme->bk * sizeof(int8_t), 'a');
+                    trace_matrix_block('r', b_base, scheme->bk, (uint64_t)N * sizeof(int8_t),
+                                       (uint64_t)scheme->bn * sizeof(int8_t), 'b');
+                }
+
+                uint64_t c_base = layout->c_base +
+                                  (((uint64_t)mb + (uint64_t)cm) * (uint64_t)N + (uint64_t)nb) *
+                                  sizeof(int32_t);
+                trace_matrix_block('w', c_base, rows, (uint64_t)N * sizeof(int32_t),
+                                   (uint64_t)scheme->bn * sizeof(int32_t), 'c');
+            }
+#else
+            for (int kb = 0; kb < K; kb += scheme->bk) {
                 uint64_t a_base = layout->a_base + (uint64_t)mb * (uint64_t)K + (uint64_t)kb;
                 uint64_t b_base = layout->b_base + (uint64_t)kb * (uint64_t)N + (uint64_t)nb;
 
@@ -231,9 +338,19 @@ static void emit_blocked_trace(const matrix_layout_t *layout, const block_scheme
                                    (uint64_t)scheme->bn * sizeof(int8_t), 'b');
             }
 
-            /* No explicit load of C beforehand; we load A/B then store C */
-            trace_matrix_block('w', c_base, scheme->bm, (uint64_t)N * sizeof(int32_t),
-                               (uint64_t)scheme->bn * sizeof(int32_t), 'c');
+            for (int cm = 0; cm < scheme->bm; cm += C_STRIP_M) {
+                int rows = C_STRIP_M;
+                if (cm + rows > scheme->bm) {
+                    rows = scheme->bm - cm;
+                }
+
+                uint64_t c_base = layout->c_base +
+                                  (((uint64_t)mb + (uint64_t)cm) * (uint64_t)N + (uint64_t)nb) *
+                                  sizeof(int32_t);
+                trace_matrix_block('w', c_base, rows, (uint64_t)N * sizeof(int32_t),
+                                   (uint64_t)scheme->bn * sizeof(int32_t), 'c');
+            }
+#endif
         }
     }
 }
@@ -251,16 +368,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (choose_best_scheme(cache_kb, &scheme) != 0) {
+    if (choose_best_scheme(cache_kb, &layout, &scheme) != 0) {
         fprintf(stderr, "failed to choose a block scheme\n");
         return 1;
     }
 
     printf("# M=%d K=%d N=%d\n", M, K, N);
     printf("# cache=%dKB\n", cache_kb);
-    printf("# best_block=%d x %d x %d | ws=%lluB | blocks=%llu | reuse/block=%llu | total_reuse=%llu\n",
+    printf("# best_block=%d x %d x %d | ws=%lluB | read_max_set_occ=%u | c_max_set_occ=%u | blocks=%llu | reuse/block=%llu | total_reuse=%llu\n",
            scheme.bm, scheme.bk, scheme.bn,
            (unsigned long long)scheme.working_set_bytes,
+           (unsigned int)max_read_set_occupancy(&layout, &scheme),
+           (unsigned int)max_c_set_occupancy(&layout, &scheme),
            (unsigned long long)scheme.big_block_count,
            (unsigned long long)scheme.total_reuse_per_block,
            (unsigned long long)scheme.total_reuse);

@@ -54,8 +54,11 @@ def main() -> int:
 
             addr_text = match.group(2)
             if should_keep(addr_text):
-                # Emit without the matrix-type suffix (drop a/b/c)
+                # Keep C-matrix MR distinct so addr.py can recognize it as CR.
                 op = match.group(1)
+                suffix = match.group(3)
+                if op == "MR" and suffix == "c":
+                    op = "CR"
                 print(f"{op} {addr_text}", file=outfile)
                 kept += 1
             else:
