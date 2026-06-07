@@ -1,5 +1,7 @@
 out/
 sim/*.txt
+sim/*.out
 *pycache*
-
+.cache/
+compile_commands.json
 
