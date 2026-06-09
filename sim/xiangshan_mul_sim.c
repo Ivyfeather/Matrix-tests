@@ -172,22 +172,31 @@ static uint16_t max_combined_set_occupancy(const matrix_layout_t *layout,
     for (int mb = 0; mb < M; mb += scheme->bm) {
         for (int kb = 0; kb < K; kb += scheme->bk) {
             for (int nb = 0; nb < N; nb += scheme->bn) {
-                uint16_t occ[L2_SETS] = {0};
                 uint64_t a_base = layout->a_base + (uint64_t)mb * (uint64_t)K + (uint64_t)kb;
                 uint64_t b_base = layout->b_base + (uint64_t)kb * (uint64_t)N + (uint64_t)nb;
-                uint64_t c_base = layout->c_base +
-                                  ((uint64_t)mb * (uint64_t)N + (uint64_t)nb) * sizeof(int32_t);
 
-                count_block_sets(occ, a_base, scheme->bm, (uint64_t)K * sizeof(int8_t),
-                                 (uint64_t)scheme->bk * sizeof(int8_t));
-                count_block_sets(occ, b_base, scheme->bk, (uint64_t)N * sizeof(int8_t),
-                                 (uint64_t)scheme->bn * sizeof(int8_t));
-                count_block_sets(occ, c_base, scheme->bm, (uint64_t)N * sizeof(int32_t),
-                                 (uint64_t)scheme->bn * sizeof(int32_t));
+                for (int cm = 0; cm < scheme->bm; cm += C_STRIP_M) {
+                    int c_rows = C_STRIP_M;
+                    if (cm + c_rows > scheme->bm) {
+                        c_rows = scheme->bm - cm;
+                    }
 
-                for (int set = 0; set < L2_SETS; set++) {
-                    if (occ[set] > max_occ) {
-                        max_occ = occ[set];
+                    uint16_t occ[L2_SETS] = {0};
+                    uint64_t c_base = layout->c_base +
+                                      (((uint64_t)mb + (uint64_t)cm) * (uint64_t)N + (uint64_t)nb) *
+                                      sizeof(int32_t);
+
+                    count_block_sets(occ, a_base, scheme->bm, (uint64_t)K * sizeof(int8_t),
+                                     (uint64_t)scheme->bk * sizeof(int8_t));
+                    count_block_sets(occ, b_base, scheme->bk, (uint64_t)N * sizeof(int8_t),
+                                     (uint64_t)scheme->bn * sizeof(int8_t));
+                    count_block_sets(occ, c_base, c_rows, (uint64_t)N * sizeof(int32_t),
+                                     (uint64_t)scheme->bn * sizeof(int32_t));
+
+                    for (int set = 0; set < L2_SETS; set++) {
+                        if (occ[set] > max_occ) {
+                            max_occ = occ[set];
+                        }
                     }
                 }
             }
@@ -258,7 +267,7 @@ static int choose_best_scheme(int cache_kb, const matrix_layout_t *layout, block
                 uint16_t read_max_occ = max_read_set_occupancy(layout, &candidate);
                 uint16_t c_max_occ = max_c_set_occupancy(layout, &candidate);
                 uint16_t combined_max_occ = max_combined_set_occupancy(layout, &candidate);
-                if (read_max_occ > L2_WAYS || c_max_occ > L2_WAYS) {
+                if (read_max_occ > L2_WAYS || c_max_occ > L2_WAYS || combined_max_occ > L2_WAYS) {
                     printf("reject block %d x %d x %d | ws=%lluB | read_max_set_occ=%u | c_max_set_occ=%u | combined_max_set_occ=%u | ways=%d\n",
                            candidate.bm, candidate.bk, candidate.bn,
                            (unsigned long long)candidate.working_set_bytes,
