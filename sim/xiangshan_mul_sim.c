@@ -15,7 +15,7 @@
 #define L2_COLOR_BYTES (L2_SETS * CACHE_LINE_BYTES)
 #define BLOCK_M 64
 #define BLOCK_K 256
-#define BLOCK_N 32
+#define BLOCK_N 64
 #ifndef MATRIX_C_STRIP_M
 #define MATRIX_C_STRIP_M 16
 #endif
